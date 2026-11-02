@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "human-attestation-verifier",
+      "devDependencies": {
+        "openpgp": "6.3.2",
+      },
+    },
+  },
+  "packages": {
+    "openpgp": ["openpgp@6.3.2", "", { "peerDependencies": { "@openpgp/web-stream-tools": "~0.3.0" }, "optionalPeers": ["@openpgp/web-stream-tools"] }, "sha512-wcZTzHz41LV8Y48zH/JlD1JT8YdNmpWOuMAjQ/podvvCwsjBEU37K3znJh4UQcj3hksE5z9TzvhbUbwzsGvlLQ=="],
+  }
+}

@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net/npm/openpgp@6.3.2/dist/openpgp.min.js 'sha256-wFlIEQzmvDwBLNZUVmiRnN/6vDwVzj4CGVLWY7PkT44='; style-src 'sha256-EWa2s9B/oQ8ECm1vjEi1APt59DViK8SERTiX+XlLASU='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>Human attestation verifier</title>
+<meta name="description" content="Check whether a person approved a GitHub issue, pull request or comment with a hardware key touch before it was posted.">
+<script src="https://cdn.jsdelivr.net/npm/openpgp@6.3.2/dist/openpgp.min.js" integrity="sha384-Q6tBjZrAPJTIxj5F9KxCni/T9dTGDsXfi4U7aBZOl+3zPHpzU6gKcyKzAhs8Xeoa" crossorigin="anonymous"></script>
+<style>
+:root {
+  --paper: #f5f6f8;
+  --ink: #17202c;
+  --muted: #556070;
+  --rule: #d3d9e0;
+  --well: #e9ecf0;
+  --pass: #146b43;
+  --fail: #b3261e;
+  --contact: #9c7a22;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Ubuntu, Cantarell, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Liberation Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101419;
+    --ink: #e4e8ee;
+    --muted: #98a2b0;
+    --rule: #2b323c;
+    --well: #181d24;
+    --pass: #5bc48c;
+    --fail: #ff8a7a;
+    --contact: #d2ae52;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101419;
+  --ink: #e4e8ee;
+  --muted: #98a2b0;
+  --rule: #2b323c;
+  --well: #181d24;
+  --pass: #5bc48c;
+  --fail: #ff8a7a;
+  --contact: #d2ae52;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 1.0625rem/1.55 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+main { max-width: 44rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
+h1, h2, h3, p, ul, dl, pre { margin: 0; }
+h1 { font-size: 2rem; line-height: 1.15; font-weight: 700; letter-spacing: -0.012em; }
+h2 { font-size: 1.125rem; line-height: 1.3; font-weight: 650; }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--contact); outline-offset: 3px; border-radius: 2px; }
+code, pre, .fp { font-family: var(--mono); font-size: 0.875em; }
+.lede { margin-top: 0.75rem; max-width: 36rem; color: var(--muted); }
+
+form { margin-top: 2rem; }
+label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
+.row { display: flex; gap: 0.5rem; }
+input[type="url"], textarea {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1.5px solid var(--muted);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+textarea { font-family: var(--mono); font-size: 0.875rem; line-height: 1.45; min-height: 11rem; resize: vertical; }
+input:focus-visible, textarea:focus-visible { outline-offset: 1px; border-color: var(--contact); }
+button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  padding: 0.6rem 1.1rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:disabled { opacity: 0.55; cursor: progress; }
+.hint { margin-top: 0.4rem; font-size: 0.875rem; color: var(--muted); }
+
+details > summary { cursor: pointer; width: fit-content; }
+details > summary::marker { color: var(--muted); }
+.paste { margin-top: 1.25rem; }
+.paste > summary { color: var(--muted); }
+.paste[open] > summary { margin-bottom: 0.75rem; }
+.paste form { margin-top: 0; }
+.paste button { margin-top: 0.5rem; }
+
+#result { margin-top: 2.75rem; }
+#result:empty { display: none; }
+
+.verdict { display: grid; grid-template-columns: 4rem 1fr; gap: 0 1.25rem; align-items: start; }
+.disc { width: 4rem; height: 4rem; display: block; }
+.disc .ring { fill: none; stroke: var(--contact); stroke-width: 3; }
+.disc .face { stroke-width: 3; }
+.disc .glyph { fill: none; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+[data-outcome="valid"] .face { fill: var(--pass); stroke: var(--pass); }
+[data-outcome="valid"] .glyph { stroke: var(--paper); }
+[data-outcome="partial"] .face { fill: none; stroke: var(--pass); }
+[data-outcome="partial"] .glyph { stroke: var(--pass); }
+[data-outcome="invalid"] .face { fill: var(--fail); stroke: var(--fail); }
+[data-outcome="invalid"] .glyph { stroke: var(--paper); }
+[data-outcome="absent"] .ring { stroke: var(--rule); }
+[data-outcome="absent"] .face { fill: none; stroke: var(--muted); }
+[data-outcome="absent"] .glyph { stroke: var(--muted); }
+.verdict h2 { font-size: clamp(1.5rem, 1.1rem + 2vw, 2.1rem); line-height: 1.18; font-weight: 700; letter-spacing: -0.01em; outline: none; }
+[data-outcome="valid"] .verdict h2 { color: var(--pass); }
+[data-outcome="invalid"] .verdict h2 { color: var(--fail); }
+.verdict p { margin-top: 0.6rem; }
+.context { margin-top: 0.75rem; color: var(--muted); font-size: 0.9375rem; overflow-wrap: anywhere; }
+
+.checks { list-style: none; padding: 0; margin-top: 2rem; border-top: 1px solid var(--rule); }
+.checks li {
+  display: grid;
+  grid-template-columns: 1.5rem 13rem 1fr;
+  gap: 0.15rem 0.75rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.mark { font-weight: 700; text-align: center; }
+[data-status="pass"] .mark { color: var(--pass); }
+[data-status="fail"] .mark { color: var(--fail); }
+[data-status="skip"] .mark { color: var(--muted); }
+.check-label { font-weight: 600; }
+.check-detail { color: var(--muted); overflow-wrap: anywhere; }
+[data-status="fail"] .check-detail { color: var(--ink); }
+
+.evidence { margin-top: 2rem; display: grid; grid-template-columns: 9rem 1fr; gap: 0.5rem 1rem; }
+.evidence dt { color: var(--muted); }
+.evidence dd { margin: 0; overflow-wrap: anywhere; }
+.fp { letter-spacing: 0.02em; }
+
+.signed { margin-top: 1.75rem; }
+.signed > summary { font-weight: 600; }
+.signed p { margin: 0.6rem 0; font-size: 0.9375rem; color: var(--muted); }
+pre {
+  background: var(--well);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+pre .head { color: var(--muted); }
+
+.problem { border-left: 3px solid var(--fail); padding: 0.1rem 0 0.1rem 1rem; }
+.problem p { margin-top: 0.4rem; }
+
+.anchor { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--rule); display: grid; gap: 2rem; }
+.anchor section > * + * { margin-top: 0.6rem; }
+.anchor ul { padding-left: 1.2rem; }
+.anchor li + li { margin-top: 0.35rem; }
+.keyline { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 1rem; }
+.keyline dt { color: var(--muted); }
+.keyline dd { margin: 0; overflow-wrap: anywhere; }
+.anchor pre { font-size: 0.75rem; max-height: 22rem; overflow: auto; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+@media (max-width: 40rem) {
+  main { padding-top: 2rem; }
+  h1 { font-size: 1.625rem; }
+  .row { flex-direction: column; }
+  .verdict { grid-template-columns: 3rem 1fr; gap: 0 0.9rem; }
+  .disc { width: 3rem; height: 3rem; }
+  .checks li { grid-template-columns: 1.5rem 1fr; }
+  .check-detail { grid-column: 2; }
+  .evidence, .keyline { grid-template-columns: 1fr; gap: 0.1rem; }
+  .evidence dd, .keyline dd { margin-bottom: 0.6rem; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal .ring { stroke-dasharray: 183; stroke-dashoffset: 183; animation: draw 650ms cubic-bezier(.3,.7,.2,1) forwards; }
+  .reveal .face, .reveal .glyph { opacity: 0; transform-origin: 32px 32px; animation: press 260ms ease-out 380ms forwards; }
+  .reveal .verdict-text { opacity: 0; animation: show 300ms ease-out 200ms forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes press { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
+  @keyframes show { to { opacity: 1; } }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Human attestation verifier</h1>
+    <p class="lede">Check whether a person read and approved the text of a GitHub issue, pull request or comment, with a touch on a hardware key, before an agent posted it under their account.</p>
+  </header>
+
+  <form id="url-form" novalidate>
+    <label for="url">GitHub link</label>
+    <div class="row">
+      <input id="url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo/issues/12" required aria-describedby="url-hint">
+      <button id="url-button" type="submit">Verify</button>
+    </div>
+    <p class="hint" id="url-hint">An issue, a pull request, or one of their comments (the link ending in #issuecomment-…). Public repositories only; the page reads GitHub's API without signing in.</p>
+  </form>
+
+  <details class="paste" id="paste">
+    <summary>Paste the raw Markdown instead</summary>
+    <form id="paste-form" novalidate>
+      <label for="raw">Raw body</label>
+      <textarea id="raw" name="raw" spellcheck="false" aria-describedby="raw-hint"></textarea>
+      <p class="hint" id="raw-hint">The body exactly as the API returns it, for example from <code>gh api repos/owner/repo/issues/12 --jq .body</code>. The rendered page hides the block, so copying from GitHub's view will not work. Without a link, the repository, kind and title cannot be checked.</p>
+      <button id="paste-button" type="submit">Verify pasted text</button>
+    </form>
+  </details>
+
+  <div id="result" aria-live="polite"></div>
+
+  <footer class="anchor">
+    <section aria-labelledby="key-heading">
+      <h2 id="key-heading">Whose key this is</h2>
+      <p>Every verdict rests on one public key, written into this page: the OpenPGP key of Augustin Bengolea, <a href="https://github.com/bengous">bengous</a> on GitHub. Of its subkeys, only one counts. It was generated on a YubiKey with a touch policy that cannot be turned off, so each signature it makes needs a finger on the key.</p>
+      <dl class="keyline">
+        <dt>Primary key</dt><dd class="fp" id="primary-fp">loading</dd>
+        <dt>Attesting subkey</dt><dd class="fp" id="subkey-fp">loading</dd>
+      </dl>
+      <p>Cross-check both before you trust a verdict: <a href="https://github.com/bengous.gpg">github.com/bengous.gpg</a> must list that primary key with that subkey, and the <a href="https://github.com/bengous">profile</a> must be the account you expect. If they differ, this copy of the page is not the one to trust.</p>
+      <details>
+        <summary>Show the public key block</summary>
+        <pre id="key-block"></pre>
+      </details>
+    </section>
+
+    <section aria-labelledby="means-heading">
+      <h2 id="means-heading">What a valid result means</h2>
+      <ul>
+        <li>The key holder touched the YubiKey after a review window showed them this exact text, with the repository, the kind and, for an issue or a pull request, the title.</li>
+        <li>The touch proves presence and a chance to read. It does not prove every word was read, or who drafted the text: an agent usually did.</li>
+        <li>An edit after posting breaks the signature. A block copied to another repository, posted as another kind, or kept under a changed title fails its check.</li>
+        <li>No block proves nothing either way. Text typed by hand on GitHub carries none.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="hand-heading">
+      <h2 id="hand-heading">Check without this page</h2>
+      <p>Fetch the raw body, rebuild the signed bytes, and let gpg judge. In a throwaway keyring:</p>
+<pre>export GNUPGHOME="$(mktemp -d)"
+curl -s https://github.com/bengous.gpg | gpg --import
+gh api repos/OWNER/REPO/issues/N --jq .body &gt; raw.md
+python3 split.py raw.md      # writes payload and payload.asc, prints the header
+gpg --status-fd 1 --verify payload.asc payload | grep VALIDSIG</pre>
+      <p>The first fingerprint after <code>VALIDSIG</code> must be the attesting subkey above, and the printed header must match the repository, the kind and the title GitHub shows. <code>split.py</code> and the format are in the README next to this page.</p>
+    </section>
+  </footer>
+</main>
+
+<script type="module">
+import {
+  ATTESTING_SUBKEY_ID,
+  SIGNER_KEY,
+  SIGNER_NAME,
+  apiUrlFor,
+  contextFromApi,
+  describeHttpError,
+  groupFingerprint,
+  makeVerifier,
+  parseGithubUrl,
+  repoApiUrl,
+  splitAttested,
+} from "./attest.js";
+
+const KIND_NAMES = { issue: "issue", pr: "pull request", comment: "comment", review: "review" };
+const STATUS_WORDS = { pass: "passed", fail: "failed", skip: "not checked" };
+const GLYPHS = {
+  valid: "M21 33 L29 41 L43 24",
+  partial: "M21 33 L29 41 L43 24",
+  invalid: "M24 24 L40 40 M40 24 L24 40",
+  absent: "M22 32 L42 32",
+};
+
+const result = document.getElementById("result");
+const urlForm = document.getElementById("url-form");
+const urlInput = document.getElementById("url");
+const urlButton = document.getElementById("url-button");
+const pasteForm = document.getElementById("paste-form");
+const pasteBox = document.getElementById("raw");
+const pasteButton = document.getElementById("paste-button");
+
+/** @param {string} tag @param {Record<string, string>} [attributes] @param {...(Node | string)} children */
+function el(tag, attributes = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+  node.append(...children);
+  return node;
+}
+
+/** @param {string} outcome */
+function disc(outcome) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 64 64");
+  svg.setAttribute("class", "disc");
+  svg.setAttribute("aria-hidden", "true");
+  const ring = document.createElementNS(ns, "circle");
+  ring.setAttribute("class", "ring");
+  ring.setAttribute("cx", "32");
+  ring.setAttribute("cy", "32");
+  ring.setAttribute("r", "29");
+  const face = document.createElementNS(ns, "circle");
+  face.setAttribute("class", "face");
+  face.setAttribute("cx", "32");
+  face.setAttribute("cy", "32");
+  face.setAttribute("r", "21.5");
+  const glyph = document.createElementNS(ns, "path");
+  glyph.setAttribute("class", "glyph");
+  glyph.setAttribute("d", GLYPHS[outcome]);
+  svg.append(ring, face, glyph);
+  return svg;
+}
+
+/** @param {Date | undefined} date */
+function formatTime(date) {
+  if (date === undefined) return "unknown";
+  const utc = new Intl.DateTimeFormat("en-GB", { dateStyle: "long", timeStyle: "medium", timeZone: "UTC" }).format(date);
+  const local = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  return `${utc} UTC (${local} your time)`;
+}
+
+/** @param {Node} node */
+function show(node) {
+  result.replaceChildren(node);
+  const heading = result.querySelector("h2");
+  heading?.focus({ preventScroll: true });
+  result.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+/** @param {string} title @param {string} message */
+function showProblem(title, message) {
+  show(el("div", { class: "problem", role: "alert" }, el("h2", { tabindex: "-1" }, title), el("p", {}, message)));
+}
+
+/** @param {any} context */
+function contextLine(context) {
+  if (context.source !== "github") return "";
+  const kind = KIND_NAMES[context.kind];
+  const line = el("p", { class: "context" });
+  const thread = context.kind === "issue" || context.kind === "pr";
+  line.append(`${kind[0].toUpperCase()}${kind.slice(1)} ${thread ? "" : "on "}#${context.number} in ${context.repo}`);
+  if (thread && context.title !== undefined) line.append(`, “${context.title}”`);
+  if (context.author !== undefined) line.append(`, posted by @${context.author}`);
+  line.append(". ");
+  if (context.htmlUrl !== undefined) line.append(el("a", { href: context.htmlUrl, rel: "noreferrer" }, "Open on GitHub"));
+  return line;
+}
+
+/** @param {any} report @param {any} context */
+function verdictText(report, context) {
+  const signer = `the YubiKey subkey of ${SIGNER_NAME}`;
+  switch (report.outcome) {
+    case "valid":
+      return [
+        "A human approved this exact text.",
+        `Signed ${formatTime(report.signedAt)} with ${signer}, for this ${KIND_NAMES[context.kind]} in ${context.repo}.`,
+      ];
+    case "partial":
+      return [
+        "The signature holds. Where it was posted was not checked.",
+        `Signed ${formatTime(report.signedAt)} with ${signer}. Pasted text carries no repository, kind or title to compare with what the block claims; verify from the GitHub link to check those as well.`,
+      ];
+    case "invalid": {
+      const first = report.checks.find((item) => item.status === "fail");
+      return ["This attestation does not hold.", `${first.label}: ${first.detail} Treat the text as unattested.`];
+    }
+    default:
+      return [
+        "No human attestation on this text.",
+        `${report.note === undefined ? "The raw body does not end with a human-attestation block" : `Only a broken trace: ${report.note}`}. Nothing here says a person approved it. Most text on GitHub carries no block, so its absence proves nothing either way.`,
+      ];
+  }
+}
+
+/** @param {any} report @param {any} context */
+function render(report, context) {
+  const [headline, explanation] = verdictText(report, context);
+  const root = el("article", { "data-outcome": report.outcome, class: "reveal", "aria-labelledby": "verdict-heading" });
+
+  root.append(
+    el(
+      "div",
+      { class: "verdict" },
+      disc(report.outcome),
+      el("div", { class: "verdict-text" }, el("h2", { id: "verdict-heading", tabindex: "-1" }, headline), el("p", {}, explanation), contextLine(context)),
+    ),
+  );
+
+  const list = el("ul", { class: "checks", "aria-label": "Checks" });
+  for (const item of report.checks) {
+    list.append(
+      el(
+        "li",
+        { "data-status": item.status },
+        el("span", { class: "mark", "aria-hidden": "true" }, item.status === "pass" ? "✓" : item.status === "fail" ? "✕" : "–"),
+        el("span", { class: "check-label" }, item.label, el("span", { class: "sr" }, `: ${STATUS_WORDS[item.status]}.`)),
+        el("span", { class: "check-detail" }, item.detail),
+      ),
+    );
+  }
+  root.append(list);
+
+  if (report.outcome !== "absent") {
+    const claim = `${report.attestation.repo}, ${KIND_NAMES[report.attestation.kind]}${report.attestation.title === undefined ? ", no title" : `, “${report.attestation.title}”`}`;
+    root.append(
+      el(
+        "dl",
+        { class: "evidence" },
+        el("dt", {}, "Signed at"),
+        el("dd", {}, formatTime(report.signedAt)),
+        el("dt", {}, "Signing subkey"),
+        el(
+          "dd",
+          {},
+          report.fingerprint !== undefined
+            ? el("span", { class: "fp" }, groupFingerprint(report.fingerprint))
+            : report.issuerKeyId !== undefined
+              ? el("span", { class: "fp" }, `${groupFingerprint(report.issuerKeyId)} (not a subkey of this key)`)
+              : "none named",
+          report.issuerKeyId === ATTESTING_SUBKEY_ID ? ", the pinned YubiKey subkey" : "",
+        ),
+        el("dt", {}, "Block claims"),
+        el("dd", {}, claim),
+      ),
+    );
+
+    const head = report.headerText;
+    const pre = el("pre", {}, el("span", { class: "head" }, head), report.signedText.slice(head.length));
+    const lines = report.signedText.split("\n").length;
+    root.append(
+      el(
+        "details",
+        { class: "signed" },
+        el("summary", {}, `Show the exact signed text (${lines} lines)`),
+        el("p", {}, "These bytes are what the review window showed and what the signature covers: the grey header, then the body with line endings normalized and trailing whitespace removed. The attestation block itself is not part of it."),
+        pre,
+      ),
+    );
+  }
+
+  show(root);
+}
+
+/** @param {boolean} busy */
+function setBusy(busy) {
+  urlButton.disabled = busy;
+  pasteButton.disabled = busy;
+  urlButton.textContent = busy ? "Verifying…" : "Verify";
+  result.setAttribute("aria-busy", String(busy));
+}
+
+/** @param {string} link */
+function remember(link) {
+  const next = new URL(location.href);
+  if (link === "") next.searchParams.delete("url");
+  else next.searchParams.set("url", link);
+  history.replaceState(null, "", next);
+}
+
+if (typeof globalThis.openpgp === "undefined") {
+  setBusy(true);
+  urlButton.textContent = "Verify";
+  showProblem(
+    "The verification library did not load.",
+    "OpenPGP.js comes from cdn.jsdelivr.net with a pinned integrity hash. Either the network or an extension blocked it, or the file served did not match the hash. This page cannot judge anything without it: reload, or check by hand with the commands below.",
+  );
+} else {
+  const verify = makeVerifier(globalThis.openpgp);
+
+  globalThis.openpgp.readKey({ armoredKey: SIGNER_KEY }).then((key) => {
+    const subkey = key.getKeys().find((candidate) => candidate.getKeyID().toHex() === ATTESTING_SUBKEY_ID);
+    document.getElementById("primary-fp").textContent = groupFingerprint(key.getFingerprint());
+    document.getElementById("subkey-fp").textContent = subkey === undefined ? "missing from the key" : groupFingerprint(subkey.getFingerprint());
+  });
+  document.getElementById("key-block").textContent = SIGNER_KEY;
+
+  // Only explains a repository mismatch (a rename or a transfer); the check
+  // fails either way, so a failed lookup just leaves the plain reason.
+  /** @param {string} repo @returns {Promise<string | undefined>} */
+  async function currentName(repo) {
+    try {
+      const response = await fetch(repoApiUrl(repo), { headers: { Accept: "application/vnd.github+json" }, referrerPolicy: "no-referrer" });
+      const json = response.ok ? await response.json() : undefined;
+      return typeof json?.full_name === "string" ? json.full_name : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** @param {string} link */
+  async function verifyLink(link) {
+    const parsed = parseGithubUrl(link);
+    if (!parsed.ok) {
+      remember("");
+      showProblem("That link cannot be read.", parsed.reason);
+      return;
+    }
+    remember(link.trim());
+    setBusy(true);
+    try {
+      /** @type {Response} */
+      let response;
+      try {
+        response = await fetch(apiUrlFor(parsed.target), { headers: { Accept: "application/vnd.github+json" }, cache: "no-store", referrerPolicy: "no-referrer" });
+      } catch {
+        showProblem("GitHub could not be reached.", "The request to api.github.com did not complete. Check the connection, or an extension that blocks requests, then try again.");
+        return;
+      }
+      if (!response.ok) {
+        showProblem("GitHub did not return the text.", describeHttpError(parsed.target, response.status, response.headers, new Date()));
+        return;
+      }
+      const context = contextFromApi(parsed.target, await response.json());
+      const split = splitAttested(context.body);
+      if (split.found && split.attestation.repo.toLowerCase() !== context.repo.toLowerCase()) {
+        context.attestedRepoNow = await currentName(split.attestation.repo);
+      }
+      render(await verify(context.body, context), context);
+    } catch (error) {
+      showProblem("Verification stopped on an unexpected error.", error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  urlForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void verifyLink(urlInput.value);
+  });
+
+  pasteForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (pasteBox.value.trim() === "") {
+      showProblem("There is nothing to verify.", "Paste the raw Markdown body first, block included.");
+      return;
+    }
+    remember("");
+    setBusy(true);
+    try {
+      const context = { source: "pasted" };
+      render(await verify(pasteBox.value, context), context);
+    } catch (error) {
+      showProblem("Verification stopped on an unexpected error.", error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const initial = new URLSearchParams(location.search).get("url");
+  if (initial !== null && initial !== "") {
+    urlInput.value = initial;
+    void verifyLink(initial);
+  }
+}
+</script>
+</body>
+</html>
