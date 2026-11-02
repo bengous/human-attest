@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net/npm/openpgp@6.3.2/dist/openpgp.min.js 'sha256-wFlIEQzmvDwBLNZUVmiRnN/6vDwVzj4CGVLWY7PkT44='; style-src 'sha256-EWa2s9B/oQ8ECm1vjEi1APt59DViK8SERTiX+XlLASU='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net/npm/openpgp@6.3.2/dist/openpgp.min.js 'sha256-+0NbIPzK1bAoy/FDqn+k+IX8K3hl+OcDscHBxpD/TRs='; style-src 'sha256-EWa2s9B/oQ8ECm1vjEi1APt59DViK8SERTiX+XlLASU='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>Human attestation verifier</title>
@@ -218,7 +218,7 @@ pre .head { color: var(--muted); }
     <form id="paste-form" novalidate>
       <label for="raw">Raw body</label>
       <textarea id="raw" name="raw" spellcheck="false" aria-describedby="raw-hint"></textarea>
-      <p class="hint" id="raw-hint">The body exactly as the API returns it, for example from <code>gh api repos/owner/repo/issues/12 --jq .body</code>. The rendered page hides the block, so copying from GitHub's view will not work. Without a link, the repository, kind and title cannot be checked.</p>
+      <p class="hint" id="raw-hint">The body exactly as the API returns it, for example from <code>gh api repos/owner/repo/issues/12 --jq .body</code>. The rendered page hides the block, so copying from GitHub's view will not work. Without a link, the repository, kind, title and thread cannot be checked.</p>
       <button id="paste-button" type="submit">Verify pasted text</button>
     </form>
   </details>
@@ -243,9 +243,9 @@ pre .head { color: var(--muted); }
     <section aria-labelledby="means-heading">
       <h2 id="means-heading">What a valid result means</h2>
       <ul>
-        <li>The key holder touched the YubiKey after a review window showed them this exact text, with the repository, the kind and, for an issue or a pull request, the title.</li>
+        <li>The key holder touched the YubiKey after a review window showed them this exact text, with the repository, the kind, and either the title of an issue or a pull request or the number of the thread a comment or review answers.</li>
         <li>The touch proves presence and a chance to read. It does not prove every word was read, or who drafted the text: an agent usually did.</li>
-        <li>An edit after posting breaks the signature. A block copied to another repository, posted as another kind, or kept under a changed title fails its check.</li>
+        <li>An edit after posting breaks the signature. A block copied to another repository or another thread, posted as another kind, or kept under a changed title fails its check.</li>
         <li>No block proves nothing either way. Text typed by hand on GitHub carries none.</li>
       </ul>
     </section>
@@ -258,7 +258,7 @@ curl -s https://github.com/bengous.gpg | gpg --import
 gh api repos/OWNER/REPO/issues/N --jq .body &gt; raw.md
 python3 split.py raw.md      # writes payload and payload.asc, prints the header
 gpg --status-fd 1 --verify payload.asc payload | grep VALIDSIG</pre>
-      <p>The first fingerprint after <code>VALIDSIG</code> must be the attesting subkey above, and the printed header must match the repository, the kind and the title GitHub shows. <code>split.py</code> and the format are in the README next to this page.</p>
+      <p>The first fingerprint after <code>VALIDSIG</code> must be the attesting subkey above, and the printed header must match the repository, the kind, and the title or thread number GitHub shows. <code>split.py</code> and the format are in the README next to this page.</p>
     </section>
   </footer>
 </main>
@@ -369,12 +369,12 @@ function verdictText(report, context) {
     case "valid":
       return [
         "A human approved this exact text.",
-        `Signed ${formatTime(report.signedAt)} with ${signer}, for this ${KIND_NAMES[context.kind]} in ${context.repo}.`,
+        `Signed ${formatTime(report.signedAt)} with ${signer}, for this ${KIND_NAMES[context.kind]}${report.attestation.thread === undefined ? "" : ` on #${report.attestation.thread}`} in ${context.repo}.`,
       ];
     case "partial":
       return [
         "The signature holds. Where it was posted was not checked.",
-        `Signed ${formatTime(report.signedAt)} with ${signer}. Pasted text carries no repository, kind or title to compare with what the block claims; verify from the GitHub link to check those as well.`,
+        `Signed ${formatTime(report.signedAt)} with ${signer}. Pasted text carries no repository, kind, title or thread to compare with what the block claims; verify from the GitHub link to check those as well.`,
       ];
     case "invalid": {
       const first = report.checks.find((item) => item.status === "fail");
@@ -383,7 +383,7 @@ function verdictText(report, context) {
     default:
       return [
         "No human attestation on this text.",
-        `${report.note === undefined ? "The raw body does not end with a human-attestation block" : `Only a broken trace: ${report.note}`}. Nothing here says a person approved it. Most text on GitHub carries no block, so its absence proves nothing either way.`,
+        `${report.note ?? "The raw body does not end with a human-attestation block."} Nothing here says a person approved it. Most text on GitHub carries no block, so its absence proves nothing either way.`,
       ];
   }
 }
@@ -417,7 +417,8 @@ function render(report, context) {
   root.append(list);
 
   if (report.outcome !== "absent") {
-    const claim = `${report.attestation.repo}, ${KIND_NAMES[report.attestation.kind]}${report.attestation.title === undefined ? ", no title" : `, “${report.attestation.title}”`}`;
+    const { repo, kind, thread, title } = report.attestation;
+    const claim = `${repo}, ${KIND_NAMES[kind]}${thread === undefined ? "" : ` on #${thread}`}${title === undefined ? "" : `, “${title}”`}`;
     root.append(
       el(
         "dl",

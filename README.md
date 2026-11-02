@@ -8,8 +8,9 @@ pull request or comment before it was posted, and shows the evidence.
 An agent writes issues, comments and pull requests under the account of
 Augustin Bengolea (`bengous`). Before such a text leaves for a repository that
 is not one of his private ones, a review window shows him the exact text with
-its repository, kind and title. When he presses Enter, gpg signs those bytes
-with a subkey that lives on a YubiKey, and the key blinks until he touches it.
+its repository, its kind, and the title of an issue or a pull request or the
+thread number of a comment or a review. When he presses Enter, gpg signs those
+bytes with a subkey that lives on a YubiKey, and the key blinks until he touches it.
 The subkey was generated on the card with the touch policy `permanent`: no
 signature without a finger on the key, and the policy cannot be switched off
 without erasing the card's OpenPGP application.
@@ -20,9 +21,10 @@ GitHub's rendered page and returned verbatim by the API.
 What a valid attestation proves:
 
 - the holder of the YubiKey touched it while this exact text, for this
-  repository, kind and title, was in front of them;
+  repository, kind, and title or thread, was in front of them;
 - the text has not changed since, and the block was not moved to another
-  repository, posted as another kind, or kept under a changed title.
+  repository or another thread, posted as another kind, or kept under a
+  changed title.
 
 What it does not prove: that every word was read or agreed with, or who drafted
 the text (usually an agent). A text without a block proves nothing either way.
@@ -32,10 +34,10 @@ the text (usually an agent). A text without a block proves nothing either way.
 The raw Markdown body ends with:
 
 ```text
-<!-- human-attestation v1
+<!-- human-attestation v2
 repo: owner/name
-kind: issue
-title: the exact title
+kind: comment
+thread: 42
 -----BEGIN PGP SIGNATURE-----
 
 …
@@ -43,17 +45,22 @@ title: the exact title
 -->
 ```
 
-- `repo` is `owner/name`; `kind` is one of `issue`, `pr`, `comment`, `review`;
-  `title` is present for an issue or a pull request only.
-- The block is the last `\n<!-- human-attestation v1\n` in the body, and only
+- `repo` is `owner/name`; `kind` is one of `issue`, `pr`, `comment`, `review`.
+- A comment or a review carries `thread:`, the number of the issue or pull
+  request it is posted on. A comment or review block without `thread:` never
+  verifies, however good its signature.
+- An issue or a pull request carries `title:`, its exact title (it has no
+  number yet when it is attested).
+- The block is the last `\n<!-- human-attestation v2\n` in the body, and only
   whitespace may follow its closing `-->`.
 - The signed bytes, UTF-8, are:
 
   ```text
-  human-attestation v1\n
+  human-attestation v2\n
   repo: owner/name\n
-  kind: issue\n
-  title: the exact title\n      (only when the block has a title)
+  kind: comment\n
+  thread: 42\n                 (only when the block has a thread)
+  title: the exact title\n     (only when the block has a title)
   \n
   <body>
   ```
@@ -62,7 +69,9 @@ title: the exact title
   trailing whitespace removed (GitHub's web editor stores CRLF, the API stores
   what it receives). The header is rebuilt in that order whatever order the
   block lists it in. The first line keeps an attestation from passing for a git
-  commit or tag signature.
+  commit or tag signature, and a `v1` block from passing for a `v2` one.
+- A `v1` block (`<!-- human-attestation v1`, whose comment blocks named no
+  thread) counts as no attestation; the page says so in a note.
 - The signature is an OpenPGP detached signature. Only one subkey counts:
   key id `6e54f320fcca8447`, fingerprint
   `6376 AB0B 9832 7307 7D0A  BFF6 6E54 F320 FCCA 8447`, a subkey of the primary
@@ -100,7 +109,7 @@ Rebuild the signed bytes with `split.py`:
 ```python
 import sys
 
-MARK = "<!-- human-attestation v1\n"
+MARK = "<!-- human-attestation v2\n"
 
 text = open(sys.argv[1], encoding="utf-8", newline="").read().replace("\r\n", "\n")
 at = text.rindex("\n" + MARK)
@@ -110,10 +119,12 @@ inner = block[:-3]
 armor = inner.index("-----BEGIN PGP SIGNATURE-----")
 fields = dict(line.split(": ", 1) for line in inner[:armor].split("\n") if line)
 header = f"repo: {fields['repo']}\nkind: {fields['kind']}\n"
+if "thread" in fields:
+    header += f"thread: {fields['thread']}\n"
 if "title" in fields:
     header += f"title: {fields['title']}\n"
 body = text[:at].rstrip()
-open("payload", "w", encoding="utf-8", newline="").write("human-attestation v1\n" + header + "\n" + body)
+open("payload", "w", encoding="utf-8", newline="").write("human-attestation v2\n" + header + "\n" + body)
 open("payload.asc", "w", encoding="utf-8", newline="").write(inner[armor:].rstrip() + "\n")
 print(header, end="")
 ```
@@ -132,7 +143,11 @@ The attestation holds when all of these are true:
 - the printed `kind` is `issue`, `pr` (the issue has a `pull_request` field),
   `comment` or `review`;
 - for an issue or a pull request, the printed `title` is the current title
-  (`gh api repos/OWNER/REPO/issues/N --jq .title`).
+  (`gh api repos/OWNER/REPO/issues/N --jq .title`);
+- for a comment or a review, a `thread` is printed and is the number of the
+  issue or pull request it sits on (the number at the end of
+  `gh api repos/OWNER/REPO/issues/comments/ID --jq .issue_url`). No `thread`
+  line means the attestation does not hold.
 
 `payload` is the exact text the signer was shown; read it.
 
@@ -148,8 +163,9 @@ Open `index.html` (served over HTTP; a module script does not load from
   link can also be shared as `index.html?url=<link>`, which verifies on load;
 - or open "Paste the raw Markdown instead" and paste the body as the API
   returns it. The page then checks the block and the signature, and reports
-  the repository, kind and title as not checked, since pasted text has no
-  place to compare with.
+  the repository, kind, title and thread as not checked, since pasted text has
+  no place to compare with. A comment or review block without a thread still
+  fails.
 
 The verdict lists each check with its reason:
 
@@ -161,6 +177,7 @@ The verdict lists each check with its reason:
 | Repository matches | the block names another repository than the one the API reports (names compare case-insensitively; a rename after the attestation fails too, and the page says it was a rename) |
 | Kind matches | the block was made for another kind of text |
 | Title matches | the issue or pull request title differs from the attested one; not applicable to comments and reviews |
+| Thread matches | a comment or review block names no thread, or another issue or pull request number than the one the API reports (`issue_url`, `pull_request_url`, else the link's number); not applicable to issues and pull requests |
 
 Below come the signing time, the signing subkey fingerprint, and the exact
 signed text in a collapsible block.
@@ -178,10 +195,13 @@ profile <https://github.com/bengous> before trusting a copy of this page.
 - `attest.js`: the verification logic as an ES module, with no DOM and no
   network: block parsing, payload construction, the checks, link parsing, API
   response mapping, HTTP error messages.
-- `test/attest.test.js`: Bun tests against the real attested issue and comment
-  of `bengous/human-attest` (fixtures in `test/fixtures/`), a tampered copy, a
-  rewritten header, a reposted block, CRLF line endings, a body without a
-  block. They also check that the page's `integrity` matches the npm copy of
+- `test/attest.test.js`: Bun tests. The real issue and comment of
+  `bengous/human-attest` (fixtures in `test/fixtures/`) carry v1 blocks and
+  must read as no attestation. The v2 cases are signed in the test by a key
+  generated with OpenPGP.js, whose signing subkey the test pins in place of
+  the YubiKey one: valid issue and comment, a comment on another thread or
+  with no thread, a tampered word, a rewritten header, another subkey, a
+  reposted or retitled block, CRLF line endings, a body without a block. They also check that the page's `integrity` matches the npm copy of
   OpenPGP.js they ran against, and that the CSP hashes match the inline script
   and style.
 

@@ -1,9 +1,9 @@
-// Verification logic for human-attestation v1 blocks. No DOM, no network: the
+// Verification logic for human-attestation v2 blocks. No DOM, no network: the
 // page and the tests pass in their own OpenPGP.js and their own fetch.
 // The format must match human-attest's attestation.ts.
 
 /** @typedef {"issue" | "pr" | "comment" | "review"} Kind */
-/** @typedef {{ repo: string, kind: Kind, title: string | undefined }} Attestation */
+/** @typedef {{ repo: string, kind: Kind, thread: number | undefined, title: string | undefined }} Attestation */
 /** @typedef {{ body: string, attestation: Attestation, armoredSignature: string }} Attested */
 /** @typedef {{ found: true } & Attested | { found: false, note: string | undefined }} Split */
 /** @typedef {{ owner: string, name: string, number: number, part: { kind: "thread" } | { kind: "comment", id: string } | { kind: "review", id: string } }} Target */
@@ -11,6 +11,7 @@
 /** @typedef {{ source: "pasted" }} PastedContext */
 /** @typedef {"pass" | "fail" | "skip"} Status */
 /** @typedef {{ id: string, label: string, status: Status, detail: string }} Check */
+/** @typedef {{ armoredKey: string, subkeyId: string }} TrustAnchor */
 /**
  * @typedef {{
  *   outcome: "absent", note: string | undefined, checks: Check[]
@@ -167,10 +168,12 @@ PET5qTq5SFWZPoiEFSWuCZhB9ktia4oV1+e0tyaifw==
 -----END PGP PUBLIC KEY BLOCK-----`;
 
 // Signed before the body so an attestation can never double as a git commit or
-// tag signature, nor as an artifact-signature.
-const SIGNATURE_DOMAIN = "human-attestation v1\n";
+// tag signature, nor as an artifact-signature, and a v1 block never as a v2 one.
+const SIGNATURE_DOMAIN = "human-attestation v2\n";
 
-const BLOCK_START = "<!-- human-attestation v1\n";
+const BLOCK_START = "<!-- human-attestation v2\n";
+
+const RETIRED_BLOCK_START = "<!-- human-attestation v1\n";
 
 const BLOCK_END = "-->";
 
@@ -180,11 +183,22 @@ const KINDS = new Set(["issue", "pr", "comment", "review"]);
 
 const REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/;
 
+const THREAD = /^[1-9]\d*$/;
+
 const KIND_NAMES = { issue: "issue", pr: "pull request", comment: "comment", review: "review" };
+
+const DEFAULT_ANCHOR = { armoredKey: SIGNER_KEY, subkeyId: ATTESTING_SUBKEY_ID };
 
 /** @param {string} text */
 export function canonicalBody(text) {
   return text.replaceAll("\r\n", "\n").trimEnd();
+}
+
+// A comment or a review lives on a thread that already exists; its
+// attestation names it, and one that does not never verifies.
+/** @param {Kind} kind */
+export function isThreaded(kind) {
+  return kind === "comment" || kind === "review";
 }
 
 /** @param {readonly string[]} lines @returns {{ attestation: Attestation } | { problem: string }} */
@@ -204,6 +218,7 @@ function parseHeader(lines) {
 
   const repo = fields.get("repo");
   const kind = fields.get("kind");
+  const thread = fields.get("thread");
 
   if (repo === undefined || !REPO.test(repo)) {
     return { problem: "the header has no valid repo line" };
@@ -213,7 +228,25 @@ function parseHeader(lines) {
     return { problem: "the header has no valid kind line" };
   }
 
-  return { attestation: { repo, kind: /** @type {Kind} */ (kind), title: fields.get("title") } };
+  if (thread !== undefined && !THREAD.test(thread)) {
+    return { problem: `the thread line "${thread}" is not an issue or pull request number` };
+  }
+
+  return {
+    attestation: {
+      repo,
+      kind: /** @type {Kind} */ (kind),
+      thread: thread === undefined ? undefined : Number(thread),
+      title: fields.get("title"),
+    },
+  };
+}
+
+/** @param {string} normalized */
+function absenceNote(normalized) {
+  return normalized.includes(`\n${RETIRED_BLOCK_START}`)
+    ? "The body carries a human-attestation v1 block. Version 1 is retired: its comment blocks named no thread, so it counts as no attestation."
+    : undefined;
 }
 
 /** @param {string} text @returns {Split} */
@@ -222,20 +255,20 @@ export function splitAttested(text) {
   const at = normalized.lastIndexOf(`\n${BLOCK_START}`);
 
   if (at === -1) {
-    return { found: false, note: undefined };
+    return { found: false, note: absenceNote(normalized) };
   }
 
   const block = normalized.slice(at + 1 + BLOCK_START.length).trimEnd();
 
   if (!block.endsWith(BLOCK_END)) {
-    return { found: false, note: "an attestation marker is in the text, but not as a block closing the body" };
+    return { found: false, note: "An attestation marker is in the text, but not as a block closing the body." };
   }
 
   const inner = block.slice(0, -BLOCK_END.length);
   const armorAt = inner.indexOf(ARMOR_BEGIN);
 
   if (armorAt === -1) {
-    return { found: false, note: "an attestation marker is in the text, but the block holds no signature" };
+    return { found: false, note: "An attestation marker is in the text, but the block holds no signature." };
   }
 
   const header = parseHeader(
@@ -246,7 +279,7 @@ export function splitAttested(text) {
   );
 
   if ("problem" in header) {
-    return { found: false, note: `an attestation marker is in the text, but ${header.problem}` };
+    return { found: false, note: `An attestation marker is in the text, but ${header.problem}.` };
   }
 
   return {
@@ -259,9 +292,10 @@ export function splitAttested(text) {
 
 /** @param {Attestation} attestation */
 function headerLines(attestation) {
+  const thread = attestation.thread === undefined ? "" : `thread: ${attestation.thread}\n`;
   const title = attestation.title === undefined ? "" : `title: ${attestation.title}\n`;
 
-  return `repo: ${attestation.repo}\nkind: ${attestation.kind}\n${title}`;
+  return `repo: ${attestation.repo}\nkind: ${attestation.kind}\n${thread}${title}`;
 }
 
 /** @param {Attestation} attestation */
@@ -277,6 +311,11 @@ export function signedPayloadText(body, attestation) {
 /** @param {string} body @param {Attestation} attestation */
 export function signedPayload(body, attestation) {
   return new TextEncoder().encode(signedPayloadText(body, attestation));
+}
+
+/** @param {string} body @param {Attestation} attestation @param {string} armoredSignature */
+export function joinAttested(body, attestation, armoredSignature) {
+  return `${canonicalBody(body)}\n\n${BLOCK_START}${headerLines(attestation)}${armoredSignature.trimEnd()}\n${BLOCK_END}\n`;
 }
 
 /** @param {string} hex */
@@ -310,6 +349,39 @@ function check(id, label, status, detail) {
 /**
  * @param {Attestation} attestation
  * @param {GithubContext | PastedContext} context
+ * @returns {Check}
+ */
+function threadCheck(attestation, context) {
+  const label = "Thread matches";
+
+  // Required by the format itself, so it fails even where nothing is compared.
+  if (isThreaded(attestation.kind) && attestation.thread === undefined) {
+    return check("thread", label, "fail", `The block attests a ${KIND_NAMES[attestation.kind]} but names no thread.`);
+  }
+
+  if (context.source === "pasted") {
+    return check(
+      "thread",
+      label,
+      "skip",
+      attestation.thread === undefined
+        ? "Not checked: pasted text. The block names no thread."
+        : `Not checked: pasted text. The block claims #${attestation.thread}.`,
+    );
+  }
+
+  if (!isThreaded(context.kind)) {
+    return check("thread", label, "skip", `Not applicable: a ${KIND_NAMES[context.kind]} binds its title instead.`);
+  }
+
+  return attestation.thread === context.number
+    ? check("thread", label, "pass", `#${context.number}`)
+    : check("thread", label, "fail", `Attested for #${attestation.thread}, posted on #${context.number}.`);
+}
+
+/**
+ * @param {Attestation} attestation
+ * @param {GithubContext | PastedContext} context
  * @returns {Check[]}
  */
 function placeChecks(attestation, context) {
@@ -325,13 +397,13 @@ function placeChecks(attestation, context) {
         "skip",
         attestation.title === undefined ? `${skipped} The block claims no title.` : `${skipped} The block claims "${attestation.title}".`,
       ),
+      threadCheck(attestation, context),
     ];
   }
 
   // GitHub owner and repository names are case-insensitive.
   const repoMatches = attestation.repo.toLowerCase() === context.repo.toLowerCase();
   const kindMatches = attestation.kind === context.kind;
-  const hasTitle = context.kind === "issue" || context.kind === "pr";
 
   return [
     repoMatches
@@ -352,7 +424,7 @@ function placeChecks(attestation, context) {
           "fail",
           `Attested as ${KIND_NAMES[attestation.kind]}, published as ${KIND_NAMES[context.kind]}.`,
         ),
-    !hasTitle
+    isThreaded(context.kind)
       ? check("title", "Title matches", "skip", `Not applicable: a ${KIND_NAMES[context.kind]} has no title.`)
       : attestation.title === context.title
         ? check("title", "Title matches", "pass", `"${context.title}"`)
@@ -364,15 +436,18 @@ function placeChecks(attestation, context) {
               ? `The block attests no title; the ${KIND_NAMES[context.kind]} is titled "${context.title}".`
               : `Attested title "${attestation.title}", published title "${context.title}". The title changed after the attestation.`,
           ),
+    threadCheck(attestation, context),
   ];
 }
 
 /**
  * @param {typeof import("openpgp")} openpgp
+ * @param {TrustAnchor} [anchor] the key and subkey to trust; the tests pass their own
  * @returns {(text: string, context: GithubContext | PastedContext) => Promise<Report>}
  */
-export function makeVerifier(openpgp) {
-  const signerKey = openpgp.readKey({ armoredKey: SIGNER_KEY });
+export function makeVerifier(openpgp, anchor = DEFAULT_ANCHOR) {
+  const signerKey = openpgp.readKey({ armoredKey: anchor.armoredKey });
+  const pinnedId = anchor.subkeyId;
 
   return async (text, context) => {
     const split = splitAttested(text);
@@ -386,7 +461,7 @@ export function makeVerifier(openpgp) {
             "block",
             "Attestation block present",
             "fail",
-            split.note === undefined ? "The raw body does not end with a human-attestation block." : `Not a valid block: ${split.note}.`,
+            split.note ?? "The raw body does not end with a human-attestation block.",
           ),
         ],
       };
@@ -432,15 +507,15 @@ export function makeVerifier(openpgp) {
       .getKeys()
       .find((candidate) => candidate.getKeyID().toHex() === issuerKeyId)
       ?.getFingerprint();
-    const pinned = issuerKeyId === ATTESTING_SUBKEY_ID;
+    const pinned = issuerKeyId === pinnedId;
 
     const checks = [
-      check("block", "Attestation block present", "pass", "The raw body ends with a human-attestation v1 block."),
+      check("block", "Attestation block present", "pass", "The raw body ends with a human-attestation v2 block."),
       signatureProblem === null
         ? check("signature", "Signature valid", "pass", `Made over the exact text below by a key of ${SIGNER_NAME}.`)
         : check("signature", "Signature valid", "fail", signatureProblem),
       pinned && signatureProblem === null
-        ? check("subkey", "Signed by the pinned subkey", "pass", `Subkey ${ATTESTING_SUBKEY_ID}, the one held on the YubiKey.`)
+        ? check("subkey", "Signed by the pinned subkey", "pass", `Subkey ${pinnedId}, the one held on the YubiKey.`)
         : pinned
           ? check("subkey", "Signed by the pinned subkey", "fail", "The signature names the pinned subkey but does not verify against it.")
           : check(
@@ -449,7 +524,7 @@ export function makeVerifier(openpgp) {
               "fail",
               issuerKeyId === undefined
                 ? "The signature names no issuer subkey."
-                : `Signed by ${issuerKeyId}, not by the YubiKey subkey ${ATTESTING_SUBKEY_ID}.`,
+                : `Signed by ${issuerKeyId}, not by the YubiKey subkey ${pinnedId}.`,
             ),
       ...placeChecks(attestation, context),
     ];
